@@ -7,6 +7,7 @@
 #include <setjmp.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <stdbool.h>
 
 #if 0
 #define debug_printf(format, ...) printf(format, ##__VA_ARGS__)
@@ -30,6 +31,8 @@ static pthread_t create_thread[NR];
 static pthread_t destroy_thread[NR];
 static pthread_mutex_t mutex[NR];
 static int main_tid = 0;
+
+static bool destroy_page = false;
 
 static void sigact_handler(int signo, siginfo_t *si, void *data)
 {
@@ -133,7 +136,7 @@ static void *destroy_func(void *t)
 	while (1) {
 		/* the destroying of page itself is atomic */
 		pthread_mutex_lock(&mutex[tid]);
-		if (exec_mem[tid] != NULL) {
+		if (destroy_page == true && exec_mem[tid] != NULL) {
 			munmap(exec_mem[tid], exec_size);
 			exec_mem[tid] = NULL;
 		}
@@ -148,13 +151,18 @@ int main(int argc, char *argv[])
 	int t;
 	struct sigaction sa, osa;
 
+	if (argv[1] != NULL && 0 == (strncmp("--destroy", argv[1], 9))) {
+		destroy_page = true;
+		printf("destroy exec page too\n");
+	}
+
 	/* set up signal handler for the page fault and invalid instruction */
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_flags = SA_SIGINFO;
 	sa.sa_sigaction = sigact_handler;
-	//sa.sa_handler = SIG_IGN;
 	sigaction(SIGILL, &sa, &osa);
-	sigaction(SIGSEGV, &sa, &osa);
+	if (destroy_page == true)
+		sigaction(SIGSEGV, &sa, &osa);
 
 	/* each pthread will inherent above signal handler */
 
