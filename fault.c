@@ -22,7 +22,7 @@
 
 #define NR 60
 #define ILL_INSTR 0xFF
-const int exec_size = 0x1000;
+int exec_size = 0x1000;
 static sigjmp_buf senv[NR];
 static volatile int jump_ok[NR];
 static volatile int total = 0;
@@ -30,7 +30,6 @@ static void *exec_mem[NR];
 static pthread_t create_thread[NR];
 static pthread_t destroy_thread[NR];
 static pthread_mutex_t mutex[NR];
-static int main_tid = 0;
 
 static bool destroy_page = false;
 
@@ -38,10 +37,26 @@ static void sigact_handler(int signo, siginfo_t *si, void *data)
 {
 	char *str;
 	int id;
+	pthread_t tid;
+	int i;
 
-	debug_printf("id %d\n", ((int) gettid() - main_tid) / 2);
+	/* find the ID number, so we can jump back correct thread */
+	tid = pthread_self();
+	id = -1;
+	for (i = 0; i < NR; i++) {
+		if (tid == create_thread[i]) {
+			id = i;
+			break;
+		}
+	}
+	if (id == -1) {
+		printf("cannot find thread index\n");
+		exit(EXIT_FAILURE);
+	}
 	debug_printf("signal is %s; ", strsignal(signo));
-	id = ((int) gettid() - main_tid) / 2;
+
+
+	str = "";
 	if (signo == SIGILL) {
 		switch(si->si_code) {
 		case ILL_ILLOPC:
@@ -65,7 +80,9 @@ static void sigact_handler(int signo, siginfo_t *si, void *data)
 		default:
 			str = "wrong sigsegv si code";
 		}
+
 	}
+
 	debug_printf("thread is %d; illegal reason: %s at %p\n", id, str, si->si_addr);
 
 	if (1 != jump_ok[id])
@@ -82,8 +99,6 @@ static void *create_func(void *t)
 
 	tid = (int) t;
 
-	debug_printf("%d == %d\n", tid, ((int) gettid() - main_tid) / 2);
-
 	/* we restart from here */
 	ret = sigsetjmp(senv[tid], 1);
 	if (ret == 0) {
@@ -99,13 +114,13 @@ static void *create_func(void *t)
 	/* the creation of (fault) page itself is atomic */
 	pthread_mutex_lock(&mutex[tid]);
 	if (exec_mem[tid] == NULL) {
-		exec_mem[tid] = mmap(NULL, exec_size, PROT_WRITE | PROT_EXEC,
+		exec_mem[tid] = mmap(NULL, exec_size, PROT_READ | PROT_WRITE | PROT_EXEC,
 						MAP_ANON | MAP_PRIVATE, -1, 0);
 		if (exec_mem[tid] == MAP_FAILED)
 			err_printf("cannot do mmap on thread %d\n", tid);
 		/* put invalid data for the executable */
 		memset(exec_mem[tid], ILL_INSTR, exec_size);
-		debug_printf("executable address is %p\n", exec_mem[tid]);
+		debug_printf("executable address for thread %d is %p\n", tid, exec_mem[tid]);
 	}
 	total++;
 	debug_printf("%dth error on thread %d\n", total, tid);
@@ -140,6 +155,7 @@ static void *destroy_func(void *t)
 			munmap(exec_mem[tid], exec_size);
 			exec_mem[tid] = NULL;
 		}
+		usleep(1000);
 		pthread_mutex_unlock(&mutex[tid]);
 	}
 	pthread_exit(NULL);
@@ -156,6 +172,14 @@ int main(int argc, char *argv[])
 		printf("destroy exec page too\n");
 	}
 
+	if (argv[1] != NULL && 0 == (strncmp("-h", argv[1], 2))) {
+		printf("%s --destroy\n", argv[0]);
+		return 0;
+	}
+
+	exec_size = sysconf(_SC_PAGE_SIZE);
+	printf("page size is %d\n", exec_size);
+
 	/* set up signal handler for the page fault and invalid instruction */
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_flags = SA_SIGINFO;
@@ -166,10 +190,16 @@ int main(int argc, char *argv[])
 
 	/* each pthread will inherent above signal handler */
 
-	main_tid = (int) gettid();
 	for (t = 0; t < NR; t++) {
+		pthread_mutex_init(&mutex[t], NULL);
 		pthread_create(&create_thread[t], NULL, create_func, (void *) t);
 		pthread_create(&destroy_thread[t], NULL, destroy_func, (void *) t);
+	}
+
+	for (t = 0; t < NR; t++) {
+		pthread_mutex_destroy(&mutex[t]);
+		pthread_join(create_thread[t], NULL);
+		pthread_join(destroy_thread[t], NULL);
 	}
 
 	pthread_exit(NULL);
