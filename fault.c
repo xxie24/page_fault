@@ -20,6 +20,9 @@
 			exit(EXIT_FAILURE);		\
 		} while(0)
 
+void *page_fault_func(void *t);
+void *tlb_thrashing_func(void *t);
+
 #define NR 4
 #define ILL_INSTR 0xFF
 static int exec_size;
@@ -165,7 +168,6 @@ static void *destroy_func(void *t)
 			exec_mem[id] = NULL;
 		}
 		pthread_mutex_unlock(&mutex[id]);
-		usleep(1000);
 	}
 	pthread_exit(NULL);
 	return NULL;
@@ -183,7 +185,7 @@ void set_signal_handler(void)
 		sigaction(SIGSEGV, &sa, &osa);
 	/*
 	 * each pthread will inherent above signal handler SIGILL and
-	 * SIGSEGV
+	 * SIGSEGV, becasue it is HW error signal.
 	 */
 }
 
@@ -198,10 +200,8 @@ int handle_parameters(int argc, char *argv[])
 		printf("%s --destroy\n", argv[0]);
 		return 0;
 	}
+	return 0;
 }
-
-void *page_fault_func(void *t);
-void *tlb_thrashing_func(void *t);
 
 int main(int argc, char *argv[])
 {
